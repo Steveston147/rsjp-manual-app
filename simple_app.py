@@ -7,10 +7,13 @@ import requests
 import xml.etree.ElementTree as ET
 import streamlit as st
 
-# ▼▼▼ この部分を追加してください ▼▼▼
+# ▼▼▼ 修正箇所 ▼▼▼
+# Secretsにある "GOOGLE_API_KEY" を読み込んで、環境変数にセットする
 if "GOOGLE_API_KEY" in st.secrets:
-    os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
-# ▲▲▲ 追加ここまで ▲▲▲
+    # 右辺を "GOOGLE_API_KEY" に修正しました（これでSecretsの値が取れます）
+    os.environ["GEMINI_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+# ▲▲▲ 修正ここまで ▲▲▲
+
 
 
 from dotenv import load_dotenv
