@@ -6,6 +6,13 @@ import datetime
 import requests
 import xml.etree.ElementTree as ET
 import streamlit as st
+
+# ▼▼▼ この部分を追加してください ▼▼▼
+if "GOOGLE_API_KEY" in st.secrets:
+    os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
+# ▲▲▲ 追加ここまで ▲▲▲
+
+
 from dotenv import load_dotenv
 from notion_client import Client
 import google.generativeai as genai
