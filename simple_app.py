@@ -315,7 +315,6 @@ def main():
 
     # ========= 右カラム =========
     with col_right:
-        # タイムゾーン定義
         JST = datetime.timezone(datetime.timedelta(hours=9))
         PST = datetime.timezone(datetime.timedelta(hours=-8))
         
@@ -424,41 +423,38 @@ def main():
                     genai.configure(api_key=GOOGLE_KEY)
                     model = genai.GenerativeModel('gemini-2.0-flash')
                     
-                    # ▼▼▼ 優しい先輩AIのプロンプト（指示書） ▼▼▼
+                    # ▼▼▼ 修正点：指示（プロンプト）の厳格化 ▼▼▼
                     full_prompt = f"""
                     あなたはRSJP（立命館大学 留学サポートデスク）の**頼れる優しい先輩社員**です。
                     新入社員や業務に不慣れな後輩（ユーザー）に対して、親身になって業務手順を教えてください。
 
                     【あなたの振る舞い（ペルソナ）】
                     * **トーン**: 優しく、励ますように。「です・ます」調で、専門用語ばかり使わず噛み砕いて説明する。
-                    * **スタンス**: 「初めてでも大丈夫！一緒にやっていこう」という応援の姿勢。
-                    * **注意**: 決して冷たく突き放したり、マニュアルのURLだけ貼って終わりにしないこと。
+                    * **導入**: 「焦らず一緒に確認しましょう！」など、安心させる一言から始める。
 
-                    【回答の構成（必ず守ること）】
-                    1.  **導入**: 「その業務ですね、焦らず一緒に確認しましょう！」など、安心させる一言から始める。
-                    2.  **手順（ステップバイステップ）**: 初心者でも迷わないよう、**番号付きリスト**で具体的なアクションを順に書く。
-                    3.  **先輩からのアドバイス（⚠️注意点）**: 初心者がやりがちなミスや、コツを「ここは間違えやすいから気をつけてね」と優しく教える。
-                    4.  **締め**: 「もし分からなかったらまた聞いてね」などの励ましの言葉で終わる。
-
-                    【必須ルール】
-                    * **Graphvizフローチャート**: 
-                        - レイアウト: 縦型(`rankdir="TB"`)
-                        - スタイル: 透明感 (bgcolor="transparent")
-                        - **重要: ノード内の文字が長い場合は、10文字程度で必ず `\\n` で改行を入れること。**
-                    * **関連情報**: 次に知っておくと良いことを3つ提案。
-
-                    【JSON形式】
+                    【超重要：回答のルール】
+                    1. **図解（フローチャート）**: 
+                       - 必ず **DOT言語 (digraph)** を使用してください。
+                       - **Mermaid記法 (graph TB) は絶対に使用禁止** です。
+                       - 図解のコードは、JSONの `chart_code` フィールドにのみ出力してください。文章中には含めないでください。
+                       - ノード内の日本語が長くなる場合は、適宜 `\\n` で改行を入れてください。
+                    
+                    2. **文章**:
+                       - 図解の後に、手順を**番号付きリスト**で丁寧に説明する。
+                       - 「⚠️注意点」として先輩からのアドバイスを入れる。
+                    
+                    【JSON出力フォーマット（厳守）】
                     ```json
                     {{
-                        "text_explanation": "マークダウンテキスト",
-                        "chart_code": "DOT言語コード",
+                        "text_explanation": "ここに先輩としての会話・説明文を入れる（コードは入れない）",
+                        "chart_code": "digraph G {{ rankdir=TB; ... }}",
                         "related_questions": ["Q1", "Q2", "Q3"]
                     }}
                     ```
                     【後輩からの質問】{user_input}
                     【業務マニュアル】{st.session_state.manual_text}
                     """
-                    # ▲▲▲ プロンプト修正ここまで ▲▲▲
+                    # ▲▲▲ 修正ここまで ▲▲▲
 
                     with st.chat_message("assistant"):
                         with st.spinner("先輩が考え中..."):
@@ -472,6 +468,11 @@ def main():
                                 st.session_state.chat_history.append({"role": "assistant", "type": "text", "content": txt})
 
                                 chart = data.get("chart_code")
+                                # Mermaidが紛れ込んだ場合の対策
+                                if chart and "graph TB" in chart:
+                                    chart = chart.replace("graph TB", "digraph G { rankdir=TB;") + "}"
+                                    chart = chart.replace("-->", "->")
+                                
                                 if chart and "digraph" in chart:
                                     glass_style = 'graph [bgcolor="transparent", fontcolor="#0d47a1", ranksep=0.6]; node [color="#2196f3", fontcolor="#0d47a1", style="filled,rounded", fillcolor="#e3f2fd", fixedsize=false, width=0, height=0, margin="0.2,0.1"]; edge [color="#2196f3"];'
                                     chart = chart.replace('digraph {', f'digraph {{ {glass_style}')
