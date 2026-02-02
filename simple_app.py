@@ -6,7 +6,7 @@ import datetime
 import requests
 import xml.etree.ElementTree as ET
 import streamlit as st
-import streamlit.components.v1 as components # ★時計用に追加
+import streamlit.components.v1 as components # ★時計を動かすための重要なライブラリ
 from dotenv import load_dotenv
 from notion_client import Client
 import google.generativeai as genai
@@ -527,4 +527,5 @@ def main():
     </script>
     """, height=0)
 
-if __name__ ==
+if __name__ == "__main__":
+    main()
