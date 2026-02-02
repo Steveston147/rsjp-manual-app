@@ -239,3 +239,325 @@ class FullNotionLoader:
             cursor = None
             while has_more:
                 try: blocks = self.notion.blocks.children.list(block_id=page_id, start_cursor=cursor)
+                except: break
+                for block in blocks["results"]:
+                    b_type = block["type"]
+                    content = ""
+                    if "rich_text" in block.get(b_type, {}):
+                        content = "".join([t["plain_text"] for t in block[b_type]["rich_text"]])
+                    if b_type == "paragraph": text_part += content + "\n"
+                    elif "heading" in b_type: text_part += f"\n■{content}\n"
+                    elif "list_item" in b_type: text_part += f"・{content}\n"
+                    elif b_type == "callout": text_part += f"💡{content}\n"
+                    elif b_type == "image":
+                        caption = ""
+                        if "caption" in block["image"] and block["image"]["caption"]:
+                            caption = "".join([t["plain_text"] for t in block["image"]["caption"]])
+                        text_part += f"\n[画像あり: {caption}]\n"
+                    elif b_type == "table":
+                        text_part += "\n【以下の表データあり】\n"
+                        try:
+                            rows = self.notion.blocks.children.list(block_id=block["id"])
+                            for row in rows["results"]:
+                                if "table_row" in row:
+                                    cells = [ "".join([t["plain_text"] for t in cell]) for cell in row["table_row"]["cells"]]
+                                    text_part += " | ".join(cells) + "\n"
+                        except: text_part += "(表の読み込みに失敗)\n"
+                    if b_type == "child_page":
+                        child_ids.append(block["id"])
+                        text_part += f"[リンク: {block['child_page']['title']}]\n"
+                    elif b_type == "child_database":
+                        try:
+                            db_query = self.notion.databases.query(database_id=block["id"])
+                            for row in db_query["results"]: child_ids.append(row["id"])
+                        except: pass
+                has_more = blocks.get("has_more", False)
+                cursor = blocks.get("next_cursor")
+        except Exception: pass
+        return text_part, child_ids
+
+def parse_hybrid_response(text):
+    """テキストとJSONを分離し、テキスト側に残った生コードを強力に削除する"""
+    result = {"text": "", "chart": None, "suggestions": []}
+    
+    match = re.search(r"```json(.*?)```", text, re.DOTALL)
+    
+    if match:
+        json_str = match.group(1).strip()
+        try:
+            data = json.loads(json_str)
+            result["chart"] = data.get("chart_code")
+            result["suggestions"] = data.get("related_questions", [])
+        except:
+            pass
+        text_part = text.replace(match.group(0), "").strip()
+    else:
+        text_part = text.strip()
+    
+    # 生コードフィルター
+    text_part = re.sub(r"```(?:dot|graphviz)?\s*digraph.*?```", "", text_part, flags=re.DOTALL)
+    text_part = re.sub(r"```(?:mermaid)?\s*graph.*?```", "", text_part, flags=re.DOTALL)
+    text_part = re.sub(r"digraph\s+.*?}", "", text_part, flags=re.DOTALL | re.MULTILINE)
+
+    if not result["chart"]:
+        code_match = re.search(r"digraph.*?\}", text, re.DOTALL)
+        if code_match:
+            result["chart"] = code_match.group(0)
+
+    result["text"] = text_part.strip()
+    return result
+
+# --- 5. アプリ本体 ---
+def main():
+    if "chat_history" not in st.session_state: st.session_state.chat_history = []
+    if "prompt_trigger" not in st.session_state: st.session_state.prompt_trigger = None
+    if "memo" not in st.session_state: st.session_state.memo = ""
+
+    col_left, col_center, col_right = st.columns([1, 3, 1], gap="medium")
+
+    # ========= 左カラム (Shortcuts / History / Memo) =========
+    with col_left:
+        st.markdown("### 💠 SHORTCUTS")
+        presets = ["✈️ 海外旅行保険", "💴 経費精算フロー", "📞 緊急連絡網", "🥁 和太鼓手配", "🛂 ビザ申請"]
+        for p in presets:
+            if st.button(p, key=p, use_container_width=True):
+                st.session_state.prompt_trigger = p.split(" ", 1)[1] if " " in p else p
+                st.rerun()
+
+        st.divider()
+        st.markdown("### 🕒 HISTORY")
+        history_container = st.container(height=300, border=False)
+        with history_container:
+            if st.session_state.chat_history:
+                for i, msg in enumerate(st.session_state.chat_history):
+                    if msg["role"] == "user":
+                        label = (msg["content"][:9] + "..") if len(msg["content"]) > 9 else msg["content"]
+                        st.markdown(f"<div class='history-link'><a href='#msg-{i}'>📄 {label}</a></div>", unsafe_allow_html=True)
+            else: st.caption("No History")
+        
+        st.divider()
+        st.markdown("### 📌 MEMO")
+        st.text_area("Sticky Note", value=st.session_state.memo, height=100, key="memo", placeholder="一時メモ...")
+
+        st.divider()
+        if "manual_text" not in st.session_state:
+            if st.button("🔄 同期開始", type="primary", use_container_width=True):
+                if not NOTION_KEY or not NOTION_PAGE_ID:
+                    st.error("Notion APIキーまたはページIDが設定されていません")
+                else:
+                    loader = FullNotionLoader(NOTION_KEY)
+                    with st.status("Fetching Data..."):
+                        all_text, count = loader.load_recursive(NOTION_PAGE_ID, lambda msg: st.write(msg))
+                    st.session_state.manual_text = all_text
+                    st.rerun()
+
+    # ========= 右カラム (Clock / Weather / Rates / News) =========
+    with col_right:
+        JST = datetime.timezone(datetime.timedelta(hours=9))
+        PST = datetime.timezone(datetime.timedelta(hours=-8))
+        
+        now_jp = datetime.datetime.now(JST)
+        now_van = datetime.datetime.now(PST)
+        
+        usd_rate, cad_rate = get_exchange_rates()
+
+        st.markdown(f"""
+        <div class="info-card" style="border-top: 3px solid #b7102e;">
+            <div class="card-label">KYOTO HQ</div>
+            <div id="jst_clock" class="card-main" style="color:#e91e63">{now_jp.strftime('%H:%M:%S')}</div>
+            <div class="card-sub">{now_jp.strftime('%Y/%m/%d')}</div>
+            <div class="weather-row">
+                <span>⛅ Clear</span>
+                <span><b>12°C</b> / 4°C</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown(f"""
+        <div class="info-card" style="border-top: 3px solid #03a9f4;">
+            <div class="card-label">VANCOUVER</div>
+            <div id="pst_clock" class="card-main" style="color:#40c4ff">{now_van.strftime('%H:%M:%S')}</div>
+            <div class="card-sub">{now_van.strftime('%Y/%m/%d')}</div>
+            <div class="weather-row">
+                <span>🌧️ Rain</span>
+                <span><b>8°C</b> / 5°C</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div class="info-card" style="border-top: 3px solid #ffb300;">
+            <div class="card-label">RATES (JPY)</div>
+            <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+                <div><span style="color:#ccc; font-size:0.8em;">USD</span> <span style="font-weight:bold; font-size:1.2em;">{usd_rate}</span></div>
+                <div><span style="color:#ccc; font-size:0.8em;">CAD</span> <span style="font-weight:bold; font-size:1.2em;">{cad_rate}</span></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("""
+        <div class="news-wrapper">
+            <div class="news-banner">
+                📰 RITS NEWS <span>RSS FEED</span>
+            </div>
+            <div class="news-content">
+        """, unsafe_allow_html=True)
+        
+        news_items = get_ritsumeikan_news()
+        if news_items:
+            for item in news_items:
+                st.markdown(f"""
+                <a href="{item['link']}" target="_blank" class="news-item">
+                    <span class="news-date">{item['date']}</span> {item['title']}
+                </a>
+                """, unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='padding:15px; font-size:0.8em; color:#999;'>No updates</div>", unsafe_allow_html=True)
+        
+        st.markdown("</div></div>", unsafe_allow_html=True)
+
+    # ========= 中央カラム (Header + Scrollable Chat) =========
+    with col_center:
+        st.markdown("""
+        <div class="saas-header">
+            <div class="saas-logo">💠 RSJP <span>INTELLIGENCE HUB</span></div>
+            <div class="status-indicator">● ONLINE</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if "manual_text" not in st.session_state:
+            st.info("👈 左メニューの「同期開始」ボタンを押してください")
+        else:
+            chat_container = st.container(height=600, border=False)
+            
+            with chat_container:
+                for i, msg in enumerate(st.session_state.chat_history):
+                    st.markdown(f"<div id='msg-{i}'></div>", unsafe_allow_html=True)
+                    with st.chat_message(msg["role"]):
+                        if msg["type"] == "text": st.markdown(msg["content"])
+                        elif msg["type"] == "chart": 
+                            try: st.graphviz_chart(msg["content"])
+                            except: pass
+                        elif msg["type"] == "suggestions":
+                            st.markdown("**💡 Next Actions:**")
+                            cols = st.columns(len(msg["content"]))
+                            for idx, q in enumerate(msg["content"]):
+                                with cols[idx]:
+                                    if st.button(q, key=f"sug_{i}_{idx}"):
+                                        st.session_state.prompt_trigger = q
+                                        st.rerun()
+
+            trigger_input = st.session_state.prompt_trigger
+            
+            if trigger_input:
+                user_input = trigger_input
+                st.session_state.prompt_trigger = None
+            else:
+                user_input = st.chat_input("質問を入力してください...")
+
+            if user_input:
+                with chat_container:
+                    with st.chat_message("user"):
+                        st.markdown(user_input)
+                st.session_state.chat_history.append({"role": "user", "type": "text", "content": user_input})
+
+                if not GOOGLE_KEY:
+                     st.error("Google APIキーが設定されていません")
+                else:
+                    genai.configure(api_key=GOOGLE_KEY)
+                    model = genai.GenerativeModel('gemini-2.0-flash')
+                    
+                    full_prompt = f"""
+                    【最重要設定】
+                    あなたはRSJP（立命館大学 留学サポートデスク）の**頼れる優しい先輩社員**です。
+                    単なる検索システムではなく、不安な後輩（ユーザー）を支えるパートナーとして振る舞ってください。
+
+                    【回答のルール】
+                    1. **説明のボリューム**:
+                       - 決して簡潔に済ませず、**詳しく、丁寧に**説明してください。
+                       - 「なぜそうするのか」という背景や理由も付け加えて、納得感を高めてください。
+                    
+                    2. **必須の構成**:
+                       - **導入と共感**: 「焦らず一緒に確認しましょう」など安心させる言葉から始める。
+                       - **具体的な手順**: 番号付きリストで詳細に。
+                       - **先輩からのアドバイス**: 間違いやすいポイントやコツを親身に教える。
+                       - **締め**: 「応援しています」などの温かい言葉。
+
+                    3. **フローチャート（最重要）**:
+                       - **必ず縦長 (`rankdir=TB`) で作成してください。**
+                       - 省略せずに、**ステップを細かく分解してノード数を増やしてください。**
+                       - DOT言語 (digraph) を使用し、Mermaidは禁止です。
+
+                    【技術的な出力ルール】
+                    1. まず、上記の構成で**通常の文章（マークダウン）**を出力してください。
+                    2. その後に、以下のJSONブロックを1つだけ出力してください。
+                    
+                    ```json
+                    {{
+                        "chart_code": "digraph G {{ rankdir=TB; ... }}", 
+                        "related_questions": ["申請期限はいつ？", "必要書類は？", "代理申請は可能？"]
+                    }}
+                    ```
+                    
+                    **※重要1: `related_questions` には "Q1" 等ではなく、文脈に沿った具体的な次の質問文（例: "期限は？"）を入れてください。**
+                    **※重要2: `digraph ...` というコードは、絶対に「文章」の中には書かないでください。JSONの中だけに書いてください。**
+
+                    【質問】{user_input}
+                    【マニュアル】{st.session_state.manual_text}
+                    """
+
+                    try:
+                        with st.spinner("先輩が考え中..."):
+                            response = model.generate_content(full_prompt)
+                            data = parse_hybrid_response(response.text)
+                            
+                            txt = data["text"]
+                            chart = data["chart"]
+                            sug = data["suggestions"]
+                        
+                        with chat_container:
+                            with st.chat_message("assistant"):
+                                st.markdown(txt)
+                                if chart and "digraph" in chart:
+                                    glass_style = 'graph [bgcolor="transparent", fontcolor="#0d47a1", ranksep=0.6]; node [color="#2196f3", fontcolor="#0d47a1", style="filled,rounded", fillcolor="#e3f2fd", fixedsize=false, width=0, height=0, margin="0.2,0.1"]; edge [color="#2196f3"];'
+                                    chart = chart.replace('digraph {', f'digraph {{ {glass_style}')
+                                    chart = chart.replace('digraph G {', f'digraph G {{ {glass_style}')
+                                    
+                                    st.markdown("---")
+                                    st.caption("📊 Flowchart")
+                                    st.graphviz_chart(chart)
+
+                        st.session_state.chat_history.append({"role": "assistant", "type": "text", "content": txt})
+                        if chart and "digraph" in chart:
+                            st.session_state.chat_history.append({"role": "assistant", "type": "chart", "content": chart})
+
+                        if sug:
+                            st.session_state.chat_history.append({"role": "assistant", "type": "suggestions", "content": sug})
+                            st.rerun()
+                    
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+    # ==========================================
+    # ★リアルタイム時計 (JS)
+    # ==========================================
+    components.html("""
+    <script>
+    function updateClocks() {
+        const now = new Date();
+        const jstOptions = { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+        const jstTime = new Intl.DateTimeFormat('ja-JP', jstOptions).format(now);
+        const jstDiv = window.parent.document.getElementById('jst_clock');
+        if (jstDiv) jstDiv.innerHTML = jstTime;
+
+        const pstOptions = { timeZone: 'America/Vancouver', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+        const pstTime = new Intl.DateTimeFormat('en-US', pstOptions).format(now);
+        const pstDiv = window.parent.document.getElementById('pst_clock');
+        if (pstDiv) pstDiv.innerHTML = pstTime;
+    }
+    setInterval(updateClocks, 1000);
+    </script>
+    """, height=0)
+
+if __name__ == "__main__":
+    main()
