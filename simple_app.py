@@ -425,30 +425,37 @@ def main():
                     genai.configure(api_key=GOOGLE_KEY)
                     model = genai.GenerativeModel('gemini-2.0-flash')
                     
+                    # プロンプトの強化：人格設定を最優先事項として記述
                     full_prompt = f"""
+                    【最重要設定】
                     あなたはRSJP（立命館大学 留学サポートデスク）の**頼れる優しい先輩社員**です。
-                    ユーザー（後輩）の質問に対して、親身になって業務手順を教えてください。
+                    単なる検索システムではなく、不安な後輩（ユーザー）を支えるパートナーとして振る舞ってください。
 
-                    【振る舞い】
-                    * 優しく、励ますようなトーンで。「焦らず一緒に確認しましょう」など安心させる。
-                    * 手順は番号付きリストで明確に。
-                    * 最後に「注意点」や「アドバイス」を付け加える。
+                    【必須の回答構成】
+                    1. **導入と共感**: 
+                       - 「その業務ですね、大丈夫ですよ！焦らず一緒に確認しましょう。」など、安心させる言葉から始めてください。
+                    
+                    2. **具体的な手順（箇条書き）**:
+                       - 初心者でも迷わないよう、番号付きリストで詳しく説明してください。
+                    
+                    3. **先輩からのアドバイス（⚠️注意点）**:
+                       - 「ここは間違いやすいから気をつけてね」といった実践的なコツを教えてください。
+                    
+                    4. **締め**:
+                       - 「応援しています！」「また聞いてね」と温かく終わってください。
 
-                    【超重要：回答の形式】
-                    1. **まず、通常の文章（マークダウン）で回答してください。** ここにJSONを含めないでください。
-                    2. 回答の最後に、以下のJSONブロックを1つだけ出力してください。
-
+                    【技術的な出力ルール】
+                    1. まず、上記の構成で**通常の文章（マークダウン）**を出力してください。
+                    2. その後に、以下のJSONブロックを1つだけ出力してください（図解データ用）。
+                    
                     ```json
                     {{
-                        "chart_code": "digraph G {{ rankdir=TB; ... }}",
+                        "chart_code": "digraph G {{ ... }}", 
                         "related_questions": ["Q1", "Q2", "Q3"]
                     }}
                     ```
+                    ※チャートコードは必ず DOT言語 (digraph) で記述し、Mermaid は使用禁止です。
 
-                    【図解作成ルール】
-                    * フローチャートは **DOT言語 (digraph)** 必須。
-                    * **Mermaid (graph TB) は禁止。**
-                    
                     【質問】{user_input}
                     【マニュアル】{st.session_state.manual_text}
                     """
@@ -457,18 +464,15 @@ def main():
                         with st.spinner("先輩が考え中..."):
                             try:
                                 response = model.generate_content(full_prompt)
-                                # テキストとJSONを分離して抽出
                                 data = parse_hybrid_response(response.text)
                                 
-                                # 1. テキスト表示（これで必ず表示されます）
+                                # 1. テキスト表示
                                 txt = data["text"]
                                 st.markdown(txt)
                                 st.session_state.chat_history.append({"role": "assistant", "type": "text", "content": txt})
 
-                                # 2. チャット表示（自動修正機能付き）
+                                # 2. チャット表示
                                 chart = data["chart"]
-                                
-                                # 念のためMermaid対策
                                 if chart and ("graph TB" in chart or "graph TD" in chart):
                                     chart = chart.replace("graph TB", "digraph G { rankdir=TB;")
                                     chart = chart.replace("graph TD", "digraph G { rankdir=TB;")
