@@ -6,7 +6,7 @@ import datetime
 import requests
 import xml.etree.ElementTree as ET
 import streamlit as st
-import streamlit.components.v1 as components # ★時計を動かすための重要なライブラリ
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from notion_client import Client
 import google.generativeai as genai
@@ -254,11 +254,8 @@ def parse_hybrid_response(text):
     match = re.search(r"```json(.*?)```", text, re.DOTALL)
     
     if match:
-        json_str = match.group(1)
-        # JSON部分を解析
+        json_str = match.group(1).strip()
         try:
-            # 先頭・末尾の余計な空白除去
-            json_str = json_str.strip()
             data = json.loads(json_str)
             result["chart"] = data.get("chart_code")
             result["suggestions"] = data.get("related_questions", [])
@@ -269,8 +266,18 @@ def parse_hybrid_response(text):
         text_part = text.replace(match.group(0), "").strip()
         result["text"] = text_part
     else:
-        # JSONが見つからない場合は全てテキストとして扱う
-        result["text"] = text.strip()
+        # JSONが見つからない場合、テキストにコードが混ざっていないか確認
+        # もしテキストの中に `digraph ...` や ```dot ...``` があれば、それをチャートとして抽出する
+        code_match = re.search(r"```(?:dot|graphviz)?\s*(digraph.*?})", text, re.DOTALL)
+        if code_match:
+            result["chart"] = code_match.group(1)
+            # テキストからはコードブロックを削除して、二重表示を防ぐ
+            text_part = text.replace(code_match.group(0), "").strip()
+            # バッククォートが残っている場合のクリーニング
+            text_part = re.sub(r"```\s*$", "", text_part).strip()
+            result["text"] = text_part
+        else:
+            result["text"] = text.strip()
         
     return result
 
@@ -428,7 +435,6 @@ def main():
                     genai.configure(api_key=GOOGLE_KEY)
                     model = genai.GenerativeModel('gemini-2.0-flash')
                     
-                    # プロンプト強化：説明量アップ & 詳細フローチャート
                     full_prompt = f"""
                     【最重要設定】
                     あなたはRSJP（立命館大学 留学サポートデスク）の**頼れる優しい先輩社員**です。
@@ -461,6 +467,8 @@ def main():
                         "related_questions": ["Q1", "Q2", "Q3"]
                     }}
                     ```
+                    
+                    **※重要: `digraph ...` というコードは、絶対に「文章」の中には書かないでください。JSONの中だけに書いてください。**
 
                     【質問】{user_input}
                     【マニュアル】{st.session_state.manual_text}
@@ -470,6 +478,7 @@ def main():
                         with st.spinner("先輩が考え中..."):
                             try:
                                 response = model.generate_content(full_prompt)
+                                # テキストとJSONを分離して抽出（コード漏れ防止機能付き）
                                 data = parse_hybrid_response(response.text)
                                 
                                 txt = data["text"]
