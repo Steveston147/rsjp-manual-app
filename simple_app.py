@@ -476,7 +476,7 @@ def main():
                     """
 
                     with st.chat_message("assistant"):
-                        with st.spinner("先輩が考え中..."):
+                        with st.spinner("AIが考え中...。そのまましばらくお待ちください"):
                             try:
                                 response = model.generate_content(full_prompt)
                                 # テキストとJSONを分離し、テキスト側に残った生コードを削除
