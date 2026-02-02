@@ -6,6 +6,7 @@ import datetime
 import requests
 import xml.etree.ElementTree as ET
 import streamlit as st
+import streamlit.components.v1 as components # ★時計用に追加
 from dotenv import load_dotenv
 from notion_client import Client
 import google.generativeai as genai
@@ -320,13 +321,15 @@ def main():
         JST = datetime.timezone(datetime.timedelta(hours=9))
         PST = datetime.timezone(datetime.timedelta(hours=-8))
         
+        # 初期表示用の時刻（JSがロードされるまでのつなぎ）
         now_jp = datetime.datetime.now(JST)
         now_van = datetime.datetime.now(PST)
 
+        # ★リアルタイム時計用のID (jst_clock, pst_clock) を付与
         st.markdown(f"""
         <div class="info-card" style="border-top: 3px solid #b7102e;">
             <div class="card-label">KYOTO HQ</div>
-            <div class="card-main" style="color:#e91e63">{now_jp.strftime('%H:%M')}</div>
+            <div id="jst_clock" class="card-main" style="color:#e91e63">{now_jp.strftime('%H:%M:%S')}</div>
             <div class="card-sub">{now_jp.strftime('%Y/%m/%d')}</div>
             <div class="weather-row">
                 <span>⛅ Clear</span>
@@ -338,7 +341,7 @@ def main():
         st.markdown(f"""
         <div class="info-card" style="border-top: 3px solid #03a9f4;">
             <div class="card-label">VANCOUVER</div>
-            <div class="card-main" style="color:#40c4ff">{now_van.strftime('%H:%M')}</div>
+            <div id="pst_clock" class="card-main" style="color:#40c4ff">{now_van.strftime('%H:%M:%S')}</div>
             <div class="card-sub">{now_van.strftime('%Y/%m/%d')}</div>
             <div class="weather-row">
                 <span>🌧️ Rain</span>
@@ -425,36 +428,39 @@ def main():
                     genai.configure(api_key=GOOGLE_KEY)
                     model = genai.GenerativeModel('gemini-2.0-flash')
                     
-                    # プロンプトの強化：人格設定を最優先事項として記述
+                    # プロンプト強化：説明量アップ & 詳細フローチャート
                     full_prompt = f"""
                     【最重要設定】
                     あなたはRSJP（立命館大学 留学サポートデスク）の**頼れる優しい先輩社員**です。
                     単なる検索システムではなく、不安な後輩（ユーザー）を支えるパートナーとして振る舞ってください。
 
-                    【必須の回答構成】
-                    1. **導入と共感**: 
-                       - 「その業務ですね、大丈夫ですよ！焦らず一緒に確認しましょう。」など、安心させる言葉から始めてください。
+                    【回答のルール】
+                    1. **説明のボリューム**:
+                       - 決して簡潔に済ませず、**詳しく、丁寧に**説明してください。
+                       - 「なぜそうするのか」という背景や理由も付け加えて、納得感を高めてください。
                     
-                    2. **具体的な手順（箇条書き）**:
-                       - 初心者でも迷わないよう、番号付きリストで詳しく説明してください。
-                    
-                    3. **先輩からのアドバイス（⚠️注意点）**:
-                       - 「ここは間違いやすいから気をつけてね」といった実践的なコツを教えてください。
-                    
-                    4. **締め**:
-                       - 「応援しています！」「また聞いてね」と温かく終わってください。
+                    2. **必須の構成**:
+                       - **導入と共感**: 「焦らず一緒に確認しましょう」など安心させる言葉から始める。
+                       - **具体的な手順**: 番号付きリストで詳細に。
+                       - **先輩からのアドバイス**: 間違いやすいポイントやコツを親身に教える。
+                       - **締め**: 「応援しています」などの温かい言葉。
+
+                    3. **フローチャート（最重要）**:
+                       - **必ず縦長 (`rankdir=TB`) で作成してください。**
+                       - 省略せずに、**ステップを細かく分解してノード数を増やしてください。**
+                       - スカスカな図は禁止です。業務の流れを詳細に可視化してください。
+                       - DOT言語 (digraph) を使用し、Mermaidは禁止です。
 
                     【技術的な出力ルール】
                     1. まず、上記の構成で**通常の文章（マークダウン）**を出力してください。
-                    2. その後に、以下のJSONブロックを1つだけ出力してください（図解データ用）。
+                    2. その後に、以下のJSONブロックを1つだけ出力してください。
                     
                     ```json
                     {{
-                        "chart_code": "digraph G {{ ... }}", 
+                        "chart_code": "digraph G {{ rankdir=TB; ... }}", 
                         "related_questions": ["Q1", "Q2", "Q3"]
                     }}
                     ```
-                    ※チャートコードは必ず DOT言語 (digraph) で記述し、Mermaid は使用禁止です。
 
                     【質問】{user_input}
                     【マニュアル】{st.session_state.manual_text}
@@ -466,12 +472,10 @@ def main():
                                 response = model.generate_content(full_prompt)
                                 data = parse_hybrid_response(response.text)
                                 
-                                # 1. テキスト表示
                                 txt = data["text"]
                                 st.markdown(txt)
                                 st.session_state.chat_history.append({"role": "assistant", "type": "text", "content": txt})
 
-                                # 2. チャット表示
                                 chart = data["chart"]
                                 if chart and ("graph TB" in chart or "graph TD" in chart):
                                     chart = chart.replace("graph TB", "digraph G { rankdir=TB;")
@@ -489,7 +493,6 @@ def main():
                                     st.graphviz_chart(chart)
                                     st.session_state.chat_history.append({"role": "assistant", "type": "chart", "content": chart})
 
-                                # 3. サジェストボタン
                                 sug = data["suggestions"]
                                 if sug:
                                     st.session_state.chat_history.append({"role": "assistant", "type": "suggestions", "content": sug})
@@ -498,5 +501,30 @@ def main():
                             except Exception as e:
                                 st.error(f"Error: {e}")
 
-if __name__ == "__main__":
-    main()
+    # ==========================================
+    # ★リアルタイム時計動作用のJavaScript (魔法)
+    # ==========================================
+    # 画面下部にこっそり埋め込み、1秒ごとにID指定で時刻を書き換える
+    components.html("""
+    <script>
+    function updateClocks() {
+        const now = new Date();
+        
+        // 日本時間 (JST)
+        const jstOptions = { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+        const jstTime = new Intl.DateTimeFormat('ja-JP', jstOptions).format(now);
+        const jstDiv = window.parent.document.getElementById('jst_clock');
+        if (jstDiv) jstDiv.innerHTML = jstTime;
+
+        // バンクーバー時間 (PST/PDT)
+        const pstOptions = { timeZone: 'America/Vancouver', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+        const pstTime = new Intl.DateTimeFormat('en-US', pstOptions).format(now);
+        const pstDiv = window.parent.document.getElementById('pst_clock');
+        if (pstDiv) pstDiv.innerHTML = pstTime;
+    }
+    // 1秒ごとに実行
+    setInterval(updateClocks, 1000);
+    </script>
+    """, height=0)
+
+if __name__ ==
