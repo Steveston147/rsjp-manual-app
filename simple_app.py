@@ -12,6 +12,13 @@ from notion_client import Client
 import google.generativeai as genai
 from graphviz import Digraph
 
+# 為替取得用（インストールされていない場合のフォールバック付き）
+try:
+    import yfinance as yf
+    HAS_YFINANCE = True
+except ImportError:
+    HAS_YFINANCE = False
+
 # ==========================================
 # 0. APIキー読み込み設定
 # ==========================================
@@ -63,6 +70,30 @@ def get_ritsumeikan_news():
     except: return []
     return []
 
+@st.cache_data(ttl=3600) # 1時間キャッシュ
+def get_exchange_rates():
+    """yfinanceを使ってリアルタイム為替レートを取得"""
+    usd_jpy = 150.00 # デフォルト値
+    cad_jpy = 110.00 # デフォルト値
+    
+    if HAS_YFINANCE:
+        try:
+            # USD/JPY
+            ticker_usd = yf.Ticker("USDJPY=X")
+            hist_usd = ticker_usd.history(period="1d")
+            if not hist_usd.empty:
+                usd_jpy = hist_usd['Close'].iloc[-1]
+            
+            # CAD/JPY
+            ticker_cad = yf.Ticker("CADJPY=X")
+            hist_cad = ticker_cad.history(period="1d")
+            if not hist_cad.empty:
+                cad_jpy = hist_cad['Close'].iloc[-1]
+        except Exception:
+            pass # エラー時はデフォルト値を返す
+            
+    return round(usd_jpy, 2), round(cad_jpy, 2)
+
 # --- 3. デザイン (Pro Dashboard CSS) ---
 st.markdown("""
 <style>
@@ -74,7 +105,7 @@ st.markdown("""
         font-family: 'Noto Sans JP', sans-serif;
     }
     header, #MainMenu, footer {visibility: hidden;}
-    .block-container { padding-top: 2rem; padding-bottom: 150px; }
+    .block-container { padding-top: 1rem; padding-bottom: 0rem; } /* 余白調整 */
 
     /* カラム共通 */
     [data-testid="column"] {
@@ -83,6 +114,7 @@ st.markdown("""
         padding: 15px;
         box-shadow: 0 4px 15px rgba(0,0,0,0.03);
         border: 1px solid white;
+        height: 100%; /* 高さ合わせ */
     }
 
     /* --- ヘッダー --- */
@@ -90,7 +122,7 @@ st.markdown("""
         display: flex; justify-content: space-between; align-items: center;
         background: linear-gradient(135deg, #7f1118, #b7102e);
         padding: 20px 30px; border-radius: 16px; color: white;
-        box-shadow: 0 8px 32px rgba(127, 17, 24, 0.25); margin-bottom: 30px;
+        box-shadow: 0 8px 32px rgba(127, 17, 24, 0.25); margin-bottom: 15px;
     }
     .saas-logo { font-family: 'Montserrat', sans-serif; font-size: 1.6em; font-weight: 800; letter-spacing: 1px; }
     .saas-logo span { font-weight: 400; opacity: 0.8; margin-left: 8px; font-size: 0.8em; }
@@ -250,7 +282,6 @@ def parse_hybrid_response(text):
     """テキストとJSONを分離し、テキスト側に残った生コードを強力に削除する"""
     result = {"text": "", "chart": None, "suggestions": []}
     
-    # 1. JSONブロックを探す
     match = re.search(r"```json(.*?)```", text, re.DOTALL)
     
     if match:
@@ -261,20 +292,15 @@ def parse_hybrid_response(text):
             result["suggestions"] = data.get("related_questions", [])
         except:
             pass
-        # JSONブロックを除去
         text_part = text.replace(match.group(0), "").strip()
     else:
         text_part = text.strip()
     
-    # 2. 【重要】テキスト側に残ってしまった「生コード」をフィルターで削除
-    # パターン: ```digraph ... ``` または ```graph ... ```
+    # 生コードフィルター
     text_part = re.sub(r"```(?:dot|graphviz)?\s*digraph.*?```", "", text_part, flags=re.DOTALL)
     text_part = re.sub(r"```(?:mermaid)?\s*graph.*?```", "", text_part, flags=re.DOTALL)
-    
-    # パターン: コードブロックなしの digraph G { ... }
     text_part = re.sub(r"digraph\s+.*?}", "", text_part, flags=re.DOTALL | re.MULTILINE)
 
-    # 3. チャートがJSONになく、テキスト側に埋もれていた場合の救済
     if not result["chart"]:
         code_match = re.search(r"digraph.*?\}", text, re.DOTALL)
         if code_match:
@@ -291,7 +317,7 @@ def main():
 
     col_left, col_center, col_right = st.columns([1, 3, 1], gap="medium")
 
-    # ========= 左カラム =========
+    # ========= 左カラム (Shortcuts / History / Memo) =========
     with col_left:
         st.markdown("### 💠 SHORTCUTS")
         presets = ["✈️ 海外旅行保険", "💴 経費精算フロー", "📞 緊急連絡網", "🥁 和太鼓手配", "🛂 ビザ申請"]
@@ -302,12 +328,15 @@ def main():
 
         st.divider()
         st.markdown("### 🕒 HISTORY")
-        if st.session_state.chat_history:
-            for i, msg in enumerate(st.session_state.chat_history):
-                if msg["role"] == "user":
-                    label = (msg["content"][:9] + "..") if len(msg["content"]) > 9 else msg["content"]
-                    st.markdown(f"<div class='history-link'><a href='#msg-{i}'>📄 {label}</a></div>", unsafe_allow_html=True)
-        else: st.caption("No History")
+        # ヒストリー表示（直近5件など制限してもよいが、一旦そのまま）
+        history_container = st.container(height=300, border=False) # ヒストリーもスクロール化
+        with history_container:
+            if st.session_state.chat_history:
+                for i, msg in enumerate(st.session_state.chat_history):
+                    if msg["role"] == "user":
+                        label = (msg["content"][:9] + "..") if len(msg["content"]) > 9 else msg["content"]
+                        st.markdown(f"<div class='history-link'><a href='#msg-{i}'>📄 {label}</a></div>", unsafe_allow_html=True)
+            else: st.caption("No History")
         
         st.divider()
         st.markdown("### 📌 MEMO")
@@ -325,13 +354,16 @@ def main():
                     st.session_state.manual_text = all_text
                     st.rerun()
 
-    # ========= 右カラム =========
+    # ========= 右カラム (Clock / Weather / Rates / News) =========
     with col_right:
         JST = datetime.timezone(datetime.timedelta(hours=9))
         PST = datetime.timezone(datetime.timedelta(hours=-8))
         
         now_jp = datetime.datetime.now(JST)
         now_van = datetime.datetime.now(PST)
+        
+        # 為替レート取得
+        usd_rate, cad_rate = get_exchange_rates()
 
         # ★リアルタイム時計用のID
         st.markdown(f"""
@@ -358,12 +390,12 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("""
+        st.markdown(f"""
         <div class="info-card" style="border-top: 3px solid #ffb300;">
             <div class="card-label">RATES (JPY)</div>
             <div style="display:flex; justify-content:space-between; align-items:flex-end;">
-                <div><span style="color:#ccc; font-size:0.8em;">USD</span> <span style="font-weight:bold; font-size:1.2em;">148.52</span></div>
-                <div><span style="color:#ccc; font-size:0.8em;">CAD</span> <span style="font-weight:bold; font-size:1.2em;">109.15</span></div>
+                <div><span style="color:#ccc; font-size:0.8em;">USD</span> <span style="font-weight:bold; font-size:1.2em;">{usd_rate}</span></div>
+                <div><span style="color:#ccc; font-size:0.8em;">CAD</span> <span style="font-weight:bold; font-size:1.2em;">{cad_rate}</span></div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -389,8 +421,9 @@ def main():
         
         st.markdown("</div></div>", unsafe_allow_html=True)
 
-    # ========= 中央カラム =========
+    # ========= 中央カラム (Header + Scrollable Chat) =========
     with col_center:
+        # ヘッダー (固定表示っぽくなる)
         st.markdown("""
         <div class="saas-header">
             <div class="saas-logo">💠 RSJP <span>INTELLIGENCE HUB</span></div>
@@ -401,21 +434,26 @@ def main():
         if "manual_text" not in st.session_state:
             st.info("👈 左メニューの「同期開始」ボタンを押してください")
         else:
-            for i, msg in enumerate(st.session_state.chat_history):
-                st.markdown(f"<div id='msg-{i}' style='margin-top:-60px; padding-top:60px;'></div>", unsafe_allow_html=True)
-                with st.chat_message(msg["role"]):
-                    if msg["type"] == "text": st.markdown(msg["content"])
-                    elif msg["type"] == "chart": 
-                        try: st.graphviz_chart(msg["content"])
-                        except: pass
-                    elif msg["type"] == "suggestions":
-                        st.markdown("**💡 Next Actions:**")
-                        cols = st.columns(len(msg["content"]))
-                        for idx, q in enumerate(msg["content"]):
-                            with cols[idx]:
-                                if st.button(q, key=f"sug_{i}_{idx}"):
-                                    st.session_state.prompt_trigger = q
-                                    st.rerun()
+            # ★ここが変更点: チャット履歴を「固定の高さのコンテナ」に入れる
+            # height=600px (またはお好みの高さ) に設定することで、この内部だけがスクロールする
+            chat_container = st.container(height=600, border=False)
+            
+            with chat_container:
+                for i, msg in enumerate(st.session_state.chat_history):
+                    st.markdown(f"<div id='msg-{i}'></div>", unsafe_allow_html=True) # リンク用アンカー
+                    with st.chat_message(msg["role"]):
+                        if msg["type"] == "text": st.markdown(msg["content"])
+                        elif msg["type"] == "chart": 
+                            try: st.graphviz_chart(msg["content"])
+                            except: pass
+                        elif msg["type"] == "suggestions":
+                            st.markdown("**💡 Next Actions:**")
+                            cols = st.columns(len(msg["content"]))
+                            for idx, q in enumerate(msg["content"]):
+                                with cols[idx]:
+                                    if st.button(q, key=f"sug_{i}_{idx}"):
+                                        st.session_state.prompt_trigger = q
+                                        st.rerun()
 
             trigger_input = st.session_state.prompt_trigger
             
@@ -426,8 +464,9 @@ def main():
                 user_input = st.chat_input("質問を入力してください...")
 
             if user_input:
-                with st.chat_message("user"):
-                    st.markdown(user_input)
+                with chat_container: # 入力後の表示もコンテナ内で更新
+                    with st.chat_message("user"):
+                        st.markdown(user_input)
                 st.session_state.chat_history.append({"role": "user", "type": "text", "content": user_input})
 
                 if not GOOGLE_KEY:
@@ -475,25 +514,22 @@ def main():
                     【マニュアル】{st.session_state.manual_text}
                     """
 
-                    with st.chat_message("assistant"):
-                        with st.spinner("AIが考え中...。そのまましばらくお待ちください"):
-                            try:
-                                response = model.generate_content(full_prompt)
-                                # テキストとJSONを分離し、テキスト側に残った生コードを削除
-                                data = parse_hybrid_response(response.text)
-                                
-                                txt = data["text"]
+                    # コンテナ外で処理中表示が出るが、回答生成後はコンテナ内に追加する
+                    try:
+                        with st.spinner("先輩が考え中..."):
+                            response = model.generate_content(full_prompt)
+                            data = parse_hybrid_response(response.text)
+                            
+                            txt = data["text"]
+                            chart = data["chart"]
+                            sug = data["suggestions"]
+                        
+                        # コンテナ内に回答を表示
+                        with chat_container:
+                            with st.chat_message("assistant"):
                                 st.markdown(txt)
-                                st.session_state.chat_history.append({"role": "assistant", "type": "text", "content": txt})
-
-                                chart = data["chart"]
-                                if chart and ("graph TB" in chart or "graph TD" in chart):
-                                    chart = chart.replace("graph TB", "digraph G { rankdir=TB;")
-                                    chart = chart.replace("graph TD", "digraph G { rankdir=TB;")
-                                    chart = chart.replace("-->", "->")
-                                    if not chart.strip().endswith("}"): chart += "}"
-                                
                                 if chart and "digraph" in chart:
+                                    # スタイル適用
                                     glass_style = 'graph [bgcolor="transparent", fontcolor="#0d47a1", ranksep=0.6]; node [color="#2196f3", fontcolor="#0d47a1", style="filled,rounded", fillcolor="#e3f2fd", fixedsize=false, width=0, height=0, margin="0.2,0.1"]; edge [color="#2196f3"];'
                                     chart = chart.replace('digraph {', f'digraph {{ {glass_style}')
                                     chart = chart.replace('digraph G {', f'digraph G {{ {glass_style}')
@@ -501,15 +537,19 @@ def main():
                                     st.markdown("---")
                                     st.caption("📊 Flowchart")
                                     st.graphviz_chart(chart)
-                                    st.session_state.chat_history.append({"role": "assistant", "type": "chart", "content": chart})
 
-                                sug = data["suggestions"]
-                                if sug:
-                                    st.session_state.chat_history.append({"role": "assistant", "type": "suggestions", "content": sug})
-                                    st.rerun()
-                            
-                            except Exception as e:
-                                st.error(f"Error: {e}")
+                        # 履歴に追加
+                        st.session_state.chat_history.append({"role": "assistant", "type": "text", "content": txt})
+                        if chart and "digraph" in chart:
+                            st.session_state.chat_history.append({"role": "assistant", "type": "chart", "content": chart})
+
+                        if sug:
+                            # サジェストのために履歴追加＆リラン
+                            st.session_state.chat_history.append({"role": "assistant", "type": "suggestions", "content": sug})
+                            st.rerun()
+                    
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
     # ==========================================
     # ★リアルタイム時計 (JS)
