@@ -247,10 +247,10 @@ class FullNotionLoader:
         return text_part, child_ids
 
 def parse_hybrid_response(text):
-    """テキスト(説明)とJSON(データ)を分離して抽出する"""
+    """テキストとJSONを分離し、テキスト側に残った生コードを強力に削除する"""
     result = {"text": "", "chart": None, "suggestions": []}
     
-    # JSONブロックを探す
+    # 1. JSONブロックを探す
     match = re.search(r"```json(.*?)```", text, re.DOTALL)
     
     if match:
@@ -261,24 +261,26 @@ def parse_hybrid_response(text):
             result["suggestions"] = data.get("related_questions", [])
         except:
             pass
-        
-        # JSONブロックを除去した残りをテキスト説明とする
+        # JSONブロックを除去
         text_part = text.replace(match.group(0), "").strip()
-        result["text"] = text_part
     else:
-        # JSONが見つからない場合、テキストにコードが混ざっていないか確認
-        # もしテキストの中に `digraph ...` や ```dot ...``` があれば、それをチャートとして抽出する
-        code_match = re.search(r"```(?:dot|graphviz)?\s*(digraph.*?})", text, re.DOTALL)
+        text_part = text.strip()
+    
+    # 2. 【重要】テキスト側に残ってしまった「生コード」をフィルターで削除
+    # パターン: ```digraph ... ``` または ```graph ... ```
+    text_part = re.sub(r"```(?:dot|graphviz)?\s*digraph.*?```", "", text_part, flags=re.DOTALL)
+    text_part = re.sub(r"```(?:mermaid)?\s*graph.*?```", "", text_part, flags=re.DOTALL)
+    
+    # パターン: コードブロックなしの digraph G { ... }
+    text_part = re.sub(r"digraph\s+.*?}", "", text_part, flags=re.DOTALL | re.MULTILINE)
+
+    # 3. チャートがJSONになく、テキスト側に埋もれていた場合の救済
+    if not result["chart"]:
+        code_match = re.search(r"digraph.*?\}", text, re.DOTALL)
         if code_match:
-            result["chart"] = code_match.group(1)
-            # テキストからはコードブロックを削除して、二重表示を防ぐ
-            text_part = text.replace(code_match.group(0), "").strip()
-            # バッククォートが残っている場合のクリーニング
-            text_part = re.sub(r"```\s*$", "", text_part).strip()
-            result["text"] = text_part
-        else:
-            result["text"] = text.strip()
-        
+            result["chart"] = code_match.group(0)
+
+    result["text"] = text_part.strip()
     return result
 
 # --- 5. アプリ本体 ---
@@ -328,11 +330,10 @@ def main():
         JST = datetime.timezone(datetime.timedelta(hours=9))
         PST = datetime.timezone(datetime.timedelta(hours=-8))
         
-        # 初期表示用の時刻（JSがロードされるまでのつなぎ）
         now_jp = datetime.datetime.now(JST)
         now_van = datetime.datetime.now(PST)
 
-        # ★リアルタイム時計用のID (jst_clock, pst_clock) を付与
+        # ★リアルタイム時計用のID
         st.markdown(f"""
         <div class="info-card" style="border-top: 3px solid #b7102e;">
             <div class="card-label">KYOTO HQ</div>
@@ -478,7 +479,7 @@ def main():
                         with st.spinner("先輩が考え中..."):
                             try:
                                 response = model.generate_content(full_prompt)
-                                # テキストとJSONを分離して抽出（コード漏れ防止機能付き）
+                                # テキストとJSONを分離し、テキスト側に残った生コードを削除
                                 data = parse_hybrid_response(response.text)
                                 
                                 txt = data["text"]
@@ -511,27 +512,25 @@ def main():
                                 st.error(f"Error: {e}")
 
     # ==========================================
-    # ★リアルタイム時計動作用のJavaScript (魔法)
+    # ★リアルタイム時計 (JS)
     # ==========================================
-    # 画面下部にこっそり埋め込み、1秒ごとにID指定で時刻を書き換える
     components.html("""
     <script>
     function updateClocks() {
         const now = new Date();
         
-        // 日本時間 (JST)
+        // JST
         const jstOptions = { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
         const jstTime = new Intl.DateTimeFormat('ja-JP', jstOptions).format(now);
         const jstDiv = window.parent.document.getElementById('jst_clock');
         if (jstDiv) jstDiv.innerHTML = jstTime;
 
-        // バンクーバー時間 (PST/PDT)
+        // PST/PDT
         const pstOptions = { timeZone: 'America/Vancouver', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
         const pstTime = new Intl.DateTimeFormat('en-US', pstOptions).format(now);
         const pstDiv = window.parent.document.getElementById('pst_clock');
         if (pstDiv) pstDiv.innerHTML = pstTime;
     }
-    // 1秒ごとに実行
     setInterval(updateClocks, 1000);
     </script>
     """, height=0)
