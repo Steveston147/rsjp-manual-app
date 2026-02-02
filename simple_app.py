@@ -12,16 +12,14 @@ import google.generativeai as genai
 from graphviz import Digraph
 
 # ==========================================
-# 0. APIキー読み込み設定（最優先）
+# 0. APIキー読み込み設定
 # ==========================================
-# Streamlit CloudのSecretsから環境変数へ値を渡す
 if "GOOGLE_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 if "NOTION_API_KEY" in st.secrets:
     os.environ["NOTION_API_KEY"] = st.secrets["NOTION_API_KEY"]
 if "NOTION_PAGE_ID" in st.secrets:
     os.environ["NOTION_PAGE_ID"] = st.secrets["NOTION_PAGE_ID"]
-# SecretsにDATABASE_IDしか設定していない場合のフォールバック
 if "NOTION_DATABASE_ID" in st.secrets and "NOTION_PAGE_ID" not in os.environ:
     os.environ["NOTION_PAGE_ID"] = st.secrets["NOTION_DATABASE_ID"]
 
@@ -86,7 +84,7 @@ st.markdown("""
         border: 1px solid white;
     }
 
-    /* --- ヘッダー (Ritsumeikan Engine Color) --- */
+    /* --- ヘッダー --- */
     .saas-header {
         display: flex; justify-content: space-between; align-items: center;
         background: linear-gradient(135deg, #7f1118, #b7102e);
@@ -317,7 +315,7 @@ def main():
 
     # ========= 右カラム =========
     with col_right:
-        # タイムゾーン定義 (修正済み)
+        # タイムゾーン定義
         JST = datetime.timezone(datetime.timedelta(hours=9))
         PST = datetime.timezone(datetime.timedelta(hours=-8))
         
@@ -424,22 +422,30 @@ def main():
                      st.error("Google APIキーが設定されていません")
                 else:
                     genai.configure(api_key=GOOGLE_KEY)
-                    # ★修正: モデル名を存在するモデルに変更 (2.5 -> 2.0-flash)
                     model = genai.GenerativeModel('gemini-2.0-flash')
                     
+                    # ▼▼▼ 優しい先輩AIのプロンプト（指示書） ▼▼▼
                     full_prompt = f"""
-                    あなたはRSJP（立命館大学 留学サポートデスク）の業務マニュアルAIです。
-                    明るく丁寧なトーンで回答してください。
+                    あなたはRSJP（立命館大学 留学サポートデスク）の**頼れる優しい先輩社員**です。
+                    新入社員や業務に不慣れな後輩（ユーザー）に対して、親身になって業務手順を教えてください。
 
-                    【回答ルール】
-                    1. **結論**: 端的に。
-                    2. **手順**: 詳細に。
-                    3. **⚠️ アドバイス**: 初心者が間違いやすい点を優しく先回りして教える。
-                    4. **Graphvizフローチャート**: 
-                       - レイアウト: 縦型(`rankdir="TB"`)
-                       - スタイル: 透明感 (bgcolor="transparent")
-                       - **重要: ノード内の文字が長い場合は、10文字程度で必ず `\\n` で改行を入れること。**
-                    5. **関連情報**: 3つ提案。
+                    【あなたの振る舞い（ペルソナ）】
+                    * **トーン**: 優しく、励ますように。「です・ます」調で、専門用語ばかり使わず噛み砕いて説明する。
+                    * **スタンス**: 「初めてでも大丈夫！一緒にやっていこう」という応援の姿勢。
+                    * **注意**: 決して冷たく突き放したり、マニュアルのURLだけ貼って終わりにしないこと。
+
+                    【回答の構成（必ず守ること）】
+                    1.  **導入**: 「その業務ですね、焦らず一緒に確認しましょう！」など、安心させる一言から始める。
+                    2.  **手順（ステップバイステップ）**: 初心者でも迷わないよう、**番号付きリスト**で具体的なアクションを順に書く。
+                    3.  **先輩からのアドバイス（⚠️注意点）**: 初心者がやりがちなミスや、コツを「ここは間違えやすいから気をつけてね」と優しく教える。
+                    4.  **締め**: 「もし分からなかったらまた聞いてね」などの励ましの言葉で終わる。
+
+                    【必須ルール】
+                    * **Graphvizフローチャート**: 
+                        - レイアウト: 縦型(`rankdir="TB"`)
+                        - スタイル: 透明感 (bgcolor="transparent")
+                        - **重要: ノード内の文字が長い場合は、10文字程度で必ず `\\n` で改行を入れること。**
+                    * **関連情報**: 次に知っておくと良いことを3つ提案。
 
                     【JSON形式】
                     ```json
@@ -449,12 +455,13 @@ def main():
                         "related_questions": ["Q1", "Q2", "Q3"]
                     }}
                     ```
-                    【質問】{user_input}
-                    【マニュアル】{st.session_state.manual_text}
+                    【後輩からの質問】{user_input}
+                    【業務マニュアル】{st.session_state.manual_text}
                     """
+                    # ▲▲▲ プロンプト修正ここまで ▲▲▲
 
                     with st.chat_message("assistant"):
-                        with st.spinner("AI Thinking..."):
+                        with st.spinner("先輩が考え中..."):
                             try:
                                 response = model.generate_content(full_prompt)
                                 data = extract_data_safe(response.text)
