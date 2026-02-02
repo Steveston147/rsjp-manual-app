@@ -245,31 +245,33 @@ class FullNotionLoader:
         except Exception: pass
         return text_part, child_ids
 
-def extract_data_safe(text):
-    try:
-        match = re.search(r"```json(.*?)```", text, re.DOTALL)
-        json_str = match.group(1) if match else text
-        start = json_str.find('{')
-        end = json_str.rfind('}') + 1
-        if start != -1 and end != 0:
-            return json.loads(json_str[start:end])
-    except: pass
-    try:
-        text_match = re.search(r'"text_explanation"\s*:\s*"(.*?)"(?:\s*,\s*"chart_code"|\s*,\s*"related_questions")', text, re.DOTALL)
-        chart_match = re.search(r'"chart_code"\s*:\s*"(.*?)"(?:\s*,\s*"related_questions"|\s*\})', text, re.DOTALL)
-        questions_match = re.search(r'"related_questions"\s*:\s*\[(.*?)\]', text, re.DOTALL)
-        extracted_text = text
-        extracted_chart = None
-        extracted_questions = []
-        if text_match: extracted_text = text_match.group(1).replace('\\n', '\n').replace('\\"', '"')
-        if chart_match: extracted_chart = chart_match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\t', '\t')
-        if questions_match:
-            try: extracted_questions = [q.strip().replace('"', '') for q in questions_match.group(1).split(',')]
-            except: pass
-        return {"text_explanation": extracted_text, "chart_code": extracted_chart, "related_questions": extracted_questions}
-    except:
-        clean_text = re.sub(r'["{}]', '', text).replace("text_explanation:", "").replace("chart_code:", "")
-        return {"text_explanation": clean_text, "chart_code": None, "related_questions": []}
+def parse_hybrid_response(text):
+    """テキスト(説明)とJSON(データ)を分離して抽出する"""
+    result = {"text": "", "chart": None, "suggestions": []}
+    
+    # JSONブロックを探す
+    match = re.search(r"```json(.*?)```", text, re.DOTALL)
+    
+    if match:
+        json_str = match.group(1)
+        # JSON部分を解析
+        try:
+            # 先頭・末尾の余計な空白除去
+            json_str = json_str.strip()
+            data = json.loads(json_str)
+            result["chart"] = data.get("chart_code")
+            result["suggestions"] = data.get("related_questions", [])
+        except:
+            pass
+        
+        # JSONブロックを除去した残りをテキスト説明とする
+        text_part = text.replace(match.group(0), "").strip()
+        result["text"] = text_part
+    else:
+        # JSONが見つからない場合は全てテキストとして扱う
+        result["text"] = text.strip()
+        
+    return result
 
 # --- 5. アプリ本体 ---
 def main():
@@ -423,55 +425,55 @@ def main():
                     genai.configure(api_key=GOOGLE_KEY)
                     model = genai.GenerativeModel('gemini-2.0-flash')
                     
-                    # ▼▼▼ 修正点：指示（プロンプト）の厳格化 ▼▼▼
                     full_prompt = f"""
                     あなたはRSJP（立命館大学 留学サポートデスク）の**頼れる優しい先輩社員**です。
-                    新入社員や業務に不慣れな後輩（ユーザー）に対して、親身になって業務手順を教えてください。
+                    ユーザー（後輩）の質問に対して、親身になって業務手順を教えてください。
 
-                    【あなたの振る舞い（ペルソナ）】
-                    * **トーン**: 優しく、励ますように。「です・ます」調で、専門用語ばかり使わず噛み砕いて説明する。
-                    * **導入**: 「焦らず一緒に確認しましょう！」など、安心させる一言から始める。
+                    【振る舞い】
+                    * 優しく、励ますようなトーンで。「焦らず一緒に確認しましょう」など安心させる。
+                    * 手順は番号付きリストで明確に。
+                    * 最後に「注意点」や「アドバイス」を付け加える。
 
-                    【超重要：回答のルール】
-                    1. **図解（フローチャート）**: 
-                       - 必ず **DOT言語 (digraph)** を使用してください。
-                       - **Mermaid記法 (graph TB) は絶対に使用禁止** です。
-                       - 図解のコードは、JSONの `chart_code` フィールドにのみ出力してください。文章中には含めないでください。
-                       - ノード内の日本語が長くなる場合は、適宜 `\\n` で改行を入れてください。
-                    
-                    2. **文章**:
-                       - 図解の後に、手順を**番号付きリスト**で丁寧に説明する。
-                       - 「⚠️注意点」として先輩からのアドバイスを入れる。
-                    
-                    【JSON出力フォーマット（厳守）】
+                    【超重要：回答の形式】
+                    1. **まず、通常の文章（マークダウン）で回答してください。** ここにJSONを含めないでください。
+                    2. 回答の最後に、以下のJSONブロックを1つだけ出力してください。
+
                     ```json
                     {{
-                        "text_explanation": "ここに先輩としての会話・説明文を入れる（コードは入れない）",
                         "chart_code": "digraph G {{ rankdir=TB; ... }}",
                         "related_questions": ["Q1", "Q2", "Q3"]
                     }}
                     ```
-                    【後輩からの質問】{user_input}
-                    【業務マニュアル】{st.session_state.manual_text}
+
+                    【図解作成ルール】
+                    * フローチャートは **DOT言語 (digraph)** 必須。
+                    * **Mermaid (graph TB) は禁止。**
+                    
+                    【質問】{user_input}
+                    【マニュアル】{st.session_state.manual_text}
                     """
-                    # ▲▲▲ 修正ここまで ▲▲▲
 
                     with st.chat_message("assistant"):
                         with st.spinner("先輩が考え中..."):
                             try:
                                 response = model.generate_content(full_prompt)
-                                data = extract_data_safe(response.text)
+                                # テキストとJSONを分離して抽出
+                                data = parse_hybrid_response(response.text)
                                 
-                                txt = data.get("text_explanation", response.text)
-                                if txt.strip().startswith("{"): txt = txt.replace('"', '').replace('{', '').replace('}', '')
+                                # 1. テキスト表示（これで必ず表示されます）
+                                txt = data["text"]
                                 st.markdown(txt)
                                 st.session_state.chat_history.append({"role": "assistant", "type": "text", "content": txt})
 
-                                chart = data.get("chart_code")
-                                # Mermaidが紛れ込んだ場合の対策
-                                if chart and "graph TB" in chart:
-                                    chart = chart.replace("graph TB", "digraph G { rankdir=TB;") + "}"
+                                # 2. チャット表示（自動修正機能付き）
+                                chart = data["chart"]
+                                
+                                # 念のためMermaid対策
+                                if chart and ("graph TB" in chart or "graph TD" in chart):
+                                    chart = chart.replace("graph TB", "digraph G { rankdir=TB;")
+                                    chart = chart.replace("graph TD", "digraph G { rankdir=TB;")
                                     chart = chart.replace("-->", "->")
+                                    if not chart.strip().endswith("}"): chart += "}"
                                 
                                 if chart and "digraph" in chart:
                                     glass_style = 'graph [bgcolor="transparent", fontcolor="#0d47a1", ranksep=0.6]; node [color="#2196f3", fontcolor="#0d47a1", style="filled,rounded", fillcolor="#e3f2fd", fixedsize=false, width=0, height=0, margin="0.2,0.1"]; edge [color="#2196f3"];'
@@ -483,7 +485,8 @@ def main():
                                     st.graphviz_chart(chart)
                                     st.session_state.chat_history.append({"role": "assistant", "type": "chart", "content": chart})
 
-                                sug = data.get("related_questions", [])
+                                # 3. サジェストボタン
+                                sug = data["suggestions"]
                                 if sug:
                                     st.session_state.chat_history.append({"role": "assistant", "type": "suggestions", "content": sug})
                                     st.rerun()
