@@ -72,25 +72,42 @@ def get_ritsumeikan_news():
 
 @st.cache_data(ttl=3600)
 def get_exchange_rates():
-    """yfinanceを使ってリアルタイム為替レートを取得"""
+    """yfinanceを使ってアクセス時点の為替レートを取得"""
+    # 取得失敗時のデフォルト値（目安）
     usd_jpy = 150.00
     cad_jpy = 110.00
     
-    if HAS_YFINANCE:
-        try:
-            ticker_usd = yf.Ticker("USDJPY=X")
-            hist_usd = ticker_usd.history(period="1d")
-            if not hist_usd.empty:
-                usd_jpy = hist_usd['Close'].iloc[-1]
-            
-            ticker_cad = yf.Ticker("CADJPY=X")
-            hist_cad = ticker_cad.history(period="1d")
-            if not hist_cad.empty:
-                cad_jpy = hist_cad['Close'].iloc[-1]
-        except Exception:
-            pass
-            
+    # yfinanceがインストールされているか確認（環境に合わせて調整してください）
+    # ここでは直接try-exceptで囲む形にします
+    try:
+        # --- 米ドル/円 (USDJPY=X) ---
+        ticker_usd = yf.Ticker("USDJPY=X")
+        # period="1d" に加え、interval="1m" (1分足) を指定して直近の値を狙う
+        hist_usd = ticker_usd.history(period="1d", interval="1m")
+        
+        if not hist_usd.empty:
+            # 取得できたデータの最後の行（最新の1分）のClose（終値）を使う
+            usd_jpy = hist_usd['Close'].iloc[-1]
+        
+        # --- カナダドル/円 (CADJPY=X) ---
+        ticker_cad = yf.Ticker("CADJPY=X")
+        hist_cad = ticker_cad.history(period="1d", interval="1m")
+        
+        if not hist_cad.empty:
+            cad_jpy = hist_cad['Close'].iloc[-1]
+
+    except Exception as e:
+        # 失敗した理由をコンソールに出力（デバッグ用）
+        print(f"為替レート取得エラー: {e}")
+        # エラー時はデフォルト値（150.00など）がそのまま返ります
+        pass
+        
     return round(usd_jpy, 2), round(cad_jpy, 2)
+
+# テスト実行
+if __name__ == "__main__":
+    u, c = get_exchange_rates()
+    print(f"USD: {u}, CAD: {c}")
 
 # --- 3. デザイン (Pro Dashboard CSS) ---
 st.markdown("""
@@ -560,4 +577,5 @@ def main():
     """, height=0)
 
 if __name__ == "__main__":
+
     main()
