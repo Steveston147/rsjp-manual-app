@@ -70,7 +70,7 @@ def get_ritsumeikan_news():
     except: return []
     return []
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600)
 def get_exchange_rates():
     """yfinanceを使ってアクセス時点の為替レートを取得"""
     # 取得失敗時のデフォルト値（目安）
@@ -579,3 +579,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
