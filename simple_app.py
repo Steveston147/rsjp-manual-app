@@ -19,6 +19,13 @@ try:
 except ImportError:
     HAS_YFINANCE = False
 
+except Exception as e:
+        # 開発中は画面に出して確認する（運用時はprintに戻す）
+        import streamlit as st
+        st.error(f"為替取得エラー: {e}") 
+        print(f"為替レート取得エラー: {e}")
+        pass
+
 # ==========================================
 # 0. APIキー読み込み設定
 # ==========================================
@@ -579,4 +586,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
