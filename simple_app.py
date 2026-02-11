@@ -12,20 +12,6 @@ from notion_client import Client
 import google.generativeai as genai
 from graphviz import Digraph
 
-# 為替取得用（インストールされていない場合のフォールバック付き）
-try:
-    import yfinance as yf
-    HAS_YFINANCE = True
-except ImportError:
-    HAS_YFINANCE = False
-
-except Exception as e:
-        # 開発中は画面に出して確認する（運用時はprintに戻す）
-        import streamlit as st
-        st.error(f"為替取得エラー: {e}") 
-        print(f"為替レート取得エラー: {e}")
-        pass
-
 # ==========================================
 # 0. APIキー読み込み設定
 # ==========================================
@@ -55,6 +41,7 @@ GOOGLE_KEY = os.getenv("GOOGLE_API_KEY")
 # --- 2. データ取得関数 ---
 def get_ritsumeikan_news():
     """立命館関連ニュース取得 (RSS)"""
+    # Google News RSSで立命館関連の最新記事を取得
     url = "https://news.google.com/rss/search?q=立命館+大学+学園+附属&hl=ja&gl=JP&ceid=JP:ja"
     try:
         response = requests.get(url, timeout=3)
@@ -76,45 +63,6 @@ def get_ritsumeikan_news():
             return news_items
     except: return []
     return []
-
-@st.cache_data(ttl=600)
-def get_exchange_rates():
-    """yfinanceを使ってアクセス時点の為替レートを取得"""
-    # 取得失敗時のデフォルト値（目安）
-    usd_jpy = 150.00
-    cad_jpy = 110.00
-    
-    # yfinanceがインストールされているか確認（環境に合わせて調整してください）
-    # ここでは直接try-exceptで囲む形にします
-    try:
-        # --- 米ドル/円 (USDJPY=X) ---
-        ticker_usd = yf.Ticker("USDJPY=X")
-        # period="1d" に加え、interval="1m" (1分足) を指定して直近の値を狙う
-        hist_usd = ticker_usd.history(period="1d", interval="1m")
-        
-        if not hist_usd.empty:
-            # 取得できたデータの最後の行（最新の1分）のClose（終値）を使う
-            usd_jpy = hist_usd['Close'].iloc[-1]
-        
-        # --- カナダドル/円 (CADJPY=X) ---
-        ticker_cad = yf.Ticker("CADJPY=X")
-        hist_cad = ticker_cad.history(period="1d", interval="1m")
-        
-        if not hist_cad.empty:
-            cad_jpy = hist_cad['Close'].iloc[-1]
-
-    except Exception as e:
-        # 失敗した理由をコンソールに出力（デバッグ用）
-        print(f"為替レート取得エラー: {e}")
-        # エラー時はデフォルト値（150.00など）がそのまま返ります
-        pass
-        
-    return round(usd_jpy, 2), round(cad_jpy, 2)
-
-# テスト実行
-if __name__ == "__main__":
-    u, c = get_exchange_rates()
-    print(f"USD: {u}, CAD: {c}")
 
 # --- 3. デザイン (Pro Dashboard CSS) ---
 st.markdown("""
@@ -142,7 +90,7 @@ st.markdown("""
     /* --- ヘッダー --- */
     .saas-header {
         display: flex; justify-content: space-between; align-items: center;
-        background: linear-gradient(135deg, #7f1118, #b7102e);
+        background: linear-gradient(135deg, #7f1118, #b7102e); /* 立命館カラー */
         padding: 20px 30px; border-radius: 16px; color: white;
         box-shadow: 0 8px 32px rgba(127, 17, 24, 0.25); margin-bottom: 15px;
     }
@@ -175,13 +123,14 @@ st.markdown("""
         margin-bottom: 20px; border: 1px solid #e0e0e0; background: white;
     }
     .news-banner {
-        background: linear-gradient(90deg, #1a237e, #3949ab);
-        color: white; padding: 10px 15px; font-family: 'Montserrat', sans-serif;
+        /* 立命館スクールカラーに変更 */
+        background: linear-gradient(90deg, #7f1118, #b7102e);
+        color: white; padding: 10px 15px; font-family: 'Noto Sans JP', sans-serif;
         font-weight: 700; font-size: 0.9em; display: flex; align-items: center;
     }
-    .news-banner span { margin-left: auto; font-size: 0.7em; opacity: 0.8; background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 4px; }
+    .news-banner span { margin-left: auto; font-size: 0.7em; opacity: 0.8; background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 4px; font-family: 'Montserrat', sans-serif;}
     
-    .news-content { max-height: 300px; overflow-y: auto; padding: 0; }
+    .news-content { max-height: 500px; overflow-y: auto; padding: 0; }
     .news-item {
         display: block; padding: 10px 15px; border-bottom: 1px solid #f5f5f5;
         text-decoration: none; color: #333; font-size: 0.85em; transition: 0.2s; line-height: 1.4;
@@ -375,7 +324,7 @@ def main():
                     st.session_state.manual_text = all_text
                     st.rerun()
 
-    # ========= 右カラム (Clock / Weather / Rates / News) =========
+    # ========= 右カラム (Clock / Weather / News) =========
     with col_right:
         JST = datetime.timezone(datetime.timedelta(hours=9))
         PST = datetime.timezone(datetime.timedelta(hours=-8))
@@ -383,8 +332,6 @@ def main():
         now_jp = datetime.datetime.now(JST)
         now_van = datetime.datetime.now(PST)
         
-        usd_rate, cad_rate = get_exchange_rates()
-
         st.markdown(f"""
         <div class="info-card" style="border-top: 3px solid #b7102e;">
             <div class="card-label">KYOTO HQ</div>
@@ -409,20 +356,11 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown(f"""
-        <div class="info-card" style="border-top: 3px solid #ffb300;">
-            <div class="card-label">RATES (JPY)</div>
-            <div style="display:flex; justify-content:space-between; align-items:flex-end;">
-                <div><span style="color:#ccc; font-size:0.8em;">USD</span> <span style="font-weight:bold; font-size:1.2em;">{usd_rate}</span></div>
-                <div><span style="color:#ccc; font-size:0.8em;">CAD</span> <span style="font-weight:bold; font-size:1.2em;">{cad_rate}</span></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
+        # ニュースセクション（為替削除により上に移動）
         st.markdown("""
         <div class="news-wrapper">
             <div class="news-banner">
-                📰 RITS NEWS <span>RSS FEED</span>
+                📰 立命館関連最新ニュース <span>RSS FEED</span>
             </div>
             <div class="news-content">
         """, unsafe_allow_html=True)
@@ -586,5 +524,3 @@ def main():
 if __name__ == "__main__":
 
     main()
-
-
